@@ -64,7 +64,7 @@ def calculate_consensus_odds(odds_list: List[int]) -> int:
     return probability_to_american(avg_probability)
 
 def get_games_data() -> List[Dict]:
-    """Fetch today's MLB games"""
+    """Fetch today's MLB games and their home run props"""
     print("🔍 Fetching today's MLB games...")
     
     # Get today's date in Eastern timezone
@@ -72,11 +72,12 @@ def get_games_data() -> List[Dict]:
     today_est = datetime.now(eastern)
     date_str = today_est.strftime('%Y-%m-%d')
     
-    url = f"{BASE_URL}/sports/{SPORT}/odds/"
-    params = {
+    # Step 1: Get today's games using h2h market (which always works)
+    games_url = f"{BASE_URL}/sports/{SPORT}/odds/"
+    games_params = {
         'apiKey': API_KEY,
         'regions': REGIONS,
-        'markets': MARKETS,
+        'markets': 'h2h',  # Use h2h to get basic game info
         'oddsFormat': ODDS_FORMAT,
         'dateFormat': 'iso',
         'commenceTimeFrom': f"{date_str}T00:00:00Z",
@@ -84,12 +85,78 @@ def get_games_data() -> List[Dict]:
     }
     
     try:
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
+        print(f"🎯 Getting MLB games for {date_str}...")
+        games_response = requests.get(games_url, params=games_params, timeout=30)
+        games_response.raise_for_status()
         
-        games_data = response.json()
-        print(f"✅ Found {len(games_data)} games with home run props")
-        return games_data
+        games_data = games_response.json()
+        print(f"✅ Found {len(games_data)} MLB games")
+        
+        if not games_data:
+            print("ℹ️  No MLB games found for today")
+            return []
+        
+        # Step 2: Get player props for each game
+        games_with_props = []
+        
+        for i, game in enumerate(games_data, 1):
+            event_id = game['id']
+            print(f"🏠 [{i}/{len(games_data)}] Getting home run props for {game['away_team']} @ {game['home_team']}...")
+            
+            # Get player props for this specific event
+            props_url = f"{BASE_URL}/sports/{SPORT}/events/{event_id}/odds/"
+            props_params = {
+                'apiKey': API_KEY,
+                'regions': REGIONS,
+                'markets': MARKETS,  # batter_home_runs
+                'oddsFormat': ODDS_FORMAT,
+                'dateFormat': 'iso'
+            }
+            
+            try:
+                props_response = requests.get(props_url, params=props_params, timeout=30)
+                
+                if props_response.status_code == 200:
+                    props_data = props_response.json()
+                    
+                    # Check if this game has home run props
+                    has_props = False
+                    if props_data.get('bookmakers'):
+                        for bookmaker in props_data['bookmakers']:
+                            for market in bookmaker.get('markets', []):
+                                if market['key'] == MARKETS and market.get('outcomes'):
+                                    has_props = True
+                                    break
+                            if has_props:
+                                break
+                    
+                    if has_props:
+                        # Merge game info with props data
+                        game_with_props = {
+                            'id': game['id'],
+                            'sport_key': game['sport_key'],
+                            'sport_title': game['sport_title'],
+                            'commence_time': game['commence_time'],
+                            'home_team': game['home_team'],
+                            'away_team': game['away_team'],
+                            'bookmakers': props_data['bookmakers']
+                        }
+                        games_with_props.append(game_with_props)
+                        print(f"    ✅ Found home run props")
+                    else:
+                        print(f"    ⚠️  No home run props available")
+                
+                elif props_response.status_code == 422:
+                    print(f"    ⚠️  Home run props not supported for this game")
+                else:
+                    print(f"    ❌ Error getting props: {props_response.status_code} - {props_response.text[:100]}")
+                    
+            except requests.exceptions.RequestException as e:
+                print(f"    ❌ Request error for {event_id}: {str(e)}")
+                continue
+        
+        print(f"🏠 Total games with home run props: {len(games_with_props)}")
+        return games_with_props
         
     except requests.exceptions.RequestException as e:
         print(f"❌ Error fetching games data: {e}")
@@ -128,10 +195,10 @@ def process_home_run_props(games_data: List[Dict]) -> Dict[str, Any]:
         
         # Find home run props market
         home_run_market = None
-        for market in game.get('bookmakers', []):
-            for market_data in market.get('markets', []):
-                if market_data['key'] == MARKETS:
-                    home_run_market = market_data
+        for bookmaker in game.get('bookmakers', []):
+            for market in bookmaker.get('markets', []):
+                if market['key'] == MARKETS:
+                    home_run_market = market
                     break
             if home_run_market:
                 break
