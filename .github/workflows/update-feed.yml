@@ -1,0 +1,154 @@
+name: Update Home Run Props Feed
+
+on:
+  schedule:
+    # Run every 2 hours from 10 AM to 10 PM ET (14:00 to 02:00 UTC next day)
+    # Adjusted for baseball season active hours
+    - cron: '0 14,16,18,20,22,0,2 * * *'
+  
+  workflow_dispatch: # Allow manual triggers
+  
+  push:
+    paths:
+      - 'homerun_odds.py'
+      - 'export_json_feed.py'
+      - 'update_public_feed.py'
+      - '.github/workflows/update-feed.yml'
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  update-feed:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Full history for proper commits
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Configure Git
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+    
+    - name: Update home run props feed
+      env:
+        THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }}
+      run: |
+        echo "🏠 Starting home run props feed update..."
+        python3 update_public_feed.py
+        
+        echo "📊 Feed update completed"
+        
+        # Show what was generated
+        if [ -d "api" ]; then
+          echo "📁 Generated API files:"
+          ls -la api/v1/
+          
+          echo "📏 File sizes:"
+          du -h api/v1/*
+        fi
+    
+    - name: Check for changes
+      id: verify-changed-files
+      run: |
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "changed=true" >> $GITHUB_OUTPUT
+          echo "📝 Changes detected in generated files"
+          git status --short
+        else
+          echo "changed=false" >> $GITHUB_OUTPUT
+          echo "✅ No changes in generated files"
+        fi
+    
+    - name: Commit and push changes
+      if: steps.verify-changed-files.outputs.changed == 'true'
+      run: |
+        git add .
+        
+        # Create commit message with statistics
+        TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S %Z')
+        
+        # Count files and get sizes if they exist
+        if [ -f "api/v1/summary.json" ]; then
+          GAMES=$(python3 -c "import json; data=json.load(open('api/v1/summary.json')); print(data['summary']['total_games'])" 2>/dev/null || echo "0")
+          PLAYERS=$(python3 -c "import json; data=json.load(open('api/v1/summary.json')); print(data['summary']['total_players'])" 2>/dev/null || echo "0")
+          
+          git commit -m "🏠 Update home run props feed - ${TIMESTAMP}
+
+          📊 Data Summary:
+          - Games: ${GAMES}
+          - Players: ${PLAYERS}
+          - Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          
+          🤖 Automated update via GitHub Actions"
+        else
+          git commit -m "🏠 Update home run props feed - ${TIMESTAMP}
+          
+          🤖 Automated update via GitHub Actions"
+        fi
+        
+        git push
+        
+        echo "✅ Successfully pushed updated feed data"
+    
+    - name: Generate deployment summary
+      if: always()
+      run: |
+        echo "## 🏠 Home Run Props Feed Update Summary" >> $GITHUB_STEP_SUMMARY
+        echo "**Timestamp:** $(date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f "api/v1/summary.json" ]; then
+          GAMES=$(python3 -c "import json; data=json.load(open('api/v1/summary.json')); print(data['summary']['total_games'])" 2>/dev/null || echo "0")
+          PLAYERS=$(python3 -c "import json; data=json.load(open('api/v1/summary.json')); print(data['summary']['total_players'])" 2>/dev/null || echo "0")
+          
+          echo "### 📊 Data Statistics" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Games:** ${GAMES}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Players:** ${PLAYERS}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ -d "api/v1/" ]; then
+          echo "### 📁 Generated Files" >> $GITHUB_STEP_SUMMARY
+          echo "| File | Size |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+          
+          for file in api/v1/*.json; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              size=$(du -h "$file" | cut -f1)
+              echo "| $filename | $size |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ "${{ steps.verify-changed-files.outputs.changed }}" == "true" ]; then
+          echo "### ✅ Status: Updated and Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "Changes were detected and successfully pushed to repository." >> $GITHUB_STEP_SUMMARY
+        else
+          echo "### ℹ️ Status: No Changes" >> $GITHUB_STEP_SUMMARY
+          echo "No changes detected in the data since last update." >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔗 API Endpoints" >> $GITHUB_STEP_SUMMARY
+        echo "- [Full Data](https://$(echo ${{ github.repository }} | cut -d'/' -f1).github.io/$(echo ${{ github.repository }} | cut -d'/' -f2)/api/v1/homerun-props.json)" >> $GITHUB_STEP_SUMMARY
+        echo "- [Summary](https://$(echo ${{ github.repository }} | cut -d'/' -f1).github.io/$(echo ${{ github.repository }} | cut -d'/' -f2)/api/v1/summary.json)" >> $GITHUB_STEP_SUMMARY
+        echo "- [Players](https://$(echo ${{ github.repository }} | cut -d'/' -f1).github.io/$(echo ${{ github.repository }} | cut -d'/' -f2)/api/v1/players.json)" >> $GITHUB_STEP_SUMMARY
+        echo "- [Best Odds](https://$(echo ${{ github.repository }} | cut -d'/' -f1).github.io/$(echo ${{ github.repository }} | cut -d'/' -f2)/api/v1/best-odds.json)" >> $GITHUB_STEP_SUMMARY 
