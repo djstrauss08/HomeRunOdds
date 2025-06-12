@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-🏠 HomeRun Odds - MLB Home Run Props Data Fetcher
-=================================================
+🏠 HomeRun Odds - MLB Home Run Props Data Fetcher with Daily Persistence
+========================================================================
 
 Fetches MLB home run prop betting odds from The Odds API and calculates
-consensus odds across multiple sportsbooks.
+consensus odds across multiple sportsbooks. Keeps odds visible until
+the next day even after games start.
 
 Usage:
     python3 homerun_odds.py
@@ -31,6 +32,9 @@ MARKETS = 'batter_home_runs'  # Home run props market
 REGIONS = 'us'
 ODDS_FORMAT = 'american'
 
+# Daily persistence configuration
+DAILY_CACHE_FILE = "daily_homerun_cache.json"
+
 def validate_api_key():
     """Validate API key is configured"""
     if not API_KEY:
@@ -38,6 +42,8 @@ def validate_api_key():
         print("Please set your API key:")
         print("export THE_ODDS_API_KEY='your-api-key-here'")
         sys.exit(1)
+    
+    print(f"✅ API key configured: {API_KEY[:8]}...")
 
 def american_to_probability(odds: int) -> float:
     """Convert American odds to implied probability"""
@@ -62,6 +68,95 @@ def calculate_consensus_odds(odds_list: List[int]) -> int:
     probabilities = [american_to_probability(odds) for odds in odds_list]
     avg_probability = sum(probabilities) / len(probabilities)
     return probability_to_american(avg_probability)
+
+def load_daily_cache() -> Dict[str, Any]:
+    """Load cached odds data from previous runs today"""
+    try:
+        if os.path.exists(DAILY_CACHE_FILE):
+            with open(DAILY_CACHE_FILE, 'r') as f:
+                cache_data = json.load(f)
+            
+            # Check if cache is from today
+            eastern = pytz.timezone('US/Eastern')
+            today_str = datetime.now(eastern).strftime('%Y-%m-%d')
+            
+            if cache_data.get('metadata', {}).get('date') == today_str:
+                print(f"✅ Loaded cached odds data from earlier today")
+                return cache_data
+            else:
+                print(f"🗑️  Cache is from {cache_data.get('metadata', {}).get('date', 'unknown date')}, starting fresh")
+                return {}
+        else:
+            print("ℹ️  No daily cache file found, starting fresh")
+            return {}
+    except Exception as e:
+        print(f"⚠️  Error loading cache: {e}")
+        return {}
+
+def save_daily_cache(data: Dict[str, Any]):
+    """Save current odds data to daily cache"""
+    try:
+        with open(DAILY_CACHE_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+        print(f"💾 Saved odds data to daily cache")
+    except Exception as e:
+        print(f"⚠️  Error saving cache: {e}")
+
+def merge_with_cached_data(new_data: Dict[str, Any], cached_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge new API data with cached data, keeping the best of both"""
+    if not cached_data or not cached_data.get('games'):
+        return new_data
+    
+    print("🔄 Merging new data with cached odds...")
+    
+    # Create a lookup for new games by game_id
+    new_games_lookup = {game['game_id']: game for game in new_data.get('games', [])}
+    
+    # Start with new data structure
+    merged_data = new_data.copy()
+    merged_games = []
+    
+    # Process cached games
+    for cached_game in cached_data.get('games', []):
+        game_id = cached_game['game_id']
+        
+        if game_id in new_games_lookup:
+            # Game still has live odds - use the new data
+            merged_games.append(new_games_lookup[game_id])
+            print(f"    🔄 Updated odds for {cached_game['away_team']} @ {cached_game['home_team']}")
+        else:
+            # Game no longer has live odds - keep cached data with a flag
+            cached_game_copy = cached_game.copy()
+            cached_game_copy['odds_status'] = 'cached'
+            cached_game_copy['last_updated'] = cached_data.get('metadata', {}).get('generated_at', 'unknown')
+            merged_games.append(cached_game_copy)
+            print(f"    💾 Preserved cached odds for {cached_game['away_team']} @ {cached_game['home_team']}")
+    
+    # Add any new games that weren't in cache
+    for game_id, new_game in new_games_lookup.items():
+        if not any(g['game_id'] == game_id for g in merged_games):
+            new_game['odds_status'] = 'live'
+            merged_games.append(new_game)
+            print(f"    🆕 Added new game {new_game['away_team']} @ {new_game['home_team']}")
+    
+    # Update merged data
+    merged_data['games'] = merged_games
+    
+    # Update summary counts
+    live_games = len([g for g in merged_games if g.get('odds_status') == 'live'])
+    cached_games = len([g for g in merged_games if g.get('odds_status') == 'cached'])
+    total_players = sum(len(game.get('players', [])) for game in merged_games)
+    
+    merged_data['summary'] = {
+        'total_games': len(merged_games),
+        'games_with_props': len(merged_games),
+        'total_players': total_players,
+        'live_games': live_games,
+        'cached_games': cached_games
+    }
+    
+    print(f"✅ Merged data: {live_games} live games, {cached_games} cached games, {total_players} total players")
+    return merged_data
 
 def get_games_data() -> List[Dict]:
     """Fetch today's MLB games and their home run props"""
@@ -310,7 +405,16 @@ def display_summary(data: Dict[str, Any]):
     print("="*60)
     print(f"Date: {datetime.fromisoformat(data['metadata']['generated_at']).strftime('%A, %B %d, %Y')}")
     print(f"\n📅 Found {data['summary']['total_games']} MLB games for today")
-    print(f"🏠 {data['summary']['games_with_props']} games have home run props")
+    
+    # Show live vs cached breakdown if available
+    if 'live_games' in data['summary']:
+        live_games = data['summary']['live_games']
+        cached_games = data['summary']['cached_games']
+        print(f"🔴 {live_games} games with live odds")
+        print(f"💾 {cached_games} games with cached odds (kept until midnight)")
+    else:
+        print(f"🏠 {data['summary']['games_with_props']} games have home run props")
+    
     print(f"⚾ {data['summary']['total_players']} total players with home run odds")
     
     if not data['games']:
@@ -323,9 +427,28 @@ def display_summary(data: Dict[str, Any]):
     for game in data['games']:
         if not game['players']:
             continue
+        
+        # Show status indicator
+        status_indicator = ""
+        if game.get('odds_status') == 'cached':
+            status_indicator = " 💾 [CACHED]"
+        elif game.get('odds_status') == 'live':
+            status_indicator = " 🔴 [LIVE]"
             
-        print(f"\n🏟️  {game['away_team']} @ {game['home_team']}")
+        print(f"\n🏟️  {game['away_team']} @ {game['home_team']}{status_indicator}")
         print(f"    {game['game_time_formatted']}")
+        
+        if game.get('odds_status') == 'cached':
+            last_updated = game.get('last_updated', 'unknown')
+            try:
+                update_time = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
+                eastern = pytz.timezone('US/Eastern')
+                update_time_est = update_time.astimezone(eastern)
+                formatted_time = update_time_est.strftime('%I:%M %p')
+                print(f"    Last updated: {formatted_time}")
+            except:
+                print(f"    Last updated: {last_updated}")
+        
         print("    " + "-"*50)
         
         for player in game['players'][:10]:  # Show top 10 players per game
@@ -351,30 +474,63 @@ def display_summary(data: Dict[str, Any]):
 
 def main():
     """Main execution function"""
-    print("🏠 HomeRun Odds - MLB Home Run Props Fetcher")
-    print("=" * 50)
+    print("🏠 HomeRun Odds - MLB Home Run Props Fetcher with Daily Persistence")
+    print("=" * 70)
     
     # Validate configuration
     validate_api_key()
     
-    # Fetch and process data
+    # Load cached data from earlier today
+    cached_data = load_daily_cache()
+    
+    # Fetch fresh data from API
+    print("\n🔍 Fetching fresh odds data from API...")
     games_data = get_games_data()
-    if not games_data:
-        print("❌ No games data available")
+    
+    if games_data:
+        # Process the fresh data
+        processed_data = process_home_run_props(games_data)
+        
+        # Merge with cached data to preserve odds from games that started
+        final_data = merge_with_cached_data(processed_data, cached_data)
+        
+        # Save the merged data as new cache
+        save_daily_cache(final_data)
+        
+    elif cached_data:
+        # No fresh data available, but we have cached data
+        print("⚠️  No fresh data available from API, using cached data only")
+        final_data = cached_data
+        
+        # Update the generated_at timestamp while keeping cached odds
+        eastern = pytz.timezone('US/Eastern')
+        final_data['metadata']['generated_at'] = datetime.now(eastern).isoformat()
+        final_data['metadata']['note'] = 'Using cached odds - API returned no data'
+        
+    else:
+        # No data at all
+        print("❌ No games data available and no cached data")
         return
     
-    processed_data = process_home_run_props(games_data)
-    
     # Display summary
-    display_summary(processed_data)
+    display_summary(final_data)
     
     # Save raw data for other scripts
     output_file = f"homerun_data_{datetime.now().strftime('%Y%m%d')}.json"
     with open(output_file, 'w') as f:
-        json.dump(processed_data, f, indent=2)
+        json.dump(final_data, f, indent=2)
     
     print(f"\n💾 Raw data saved to: {output_file}")
     print(f"🔗 API usage: Check your quota at https://the-odds-api.com/account/")
+    
+    # Show cache info
+    print(f"\n💡 Odds will remain visible until midnight ET")
+    if cached_data:
+        live_count = final_data['summary'].get('live_games', 0)
+        cached_count = final_data['summary'].get('cached_games', 0)
+        if cached_count > 0:
+            print(f"   {live_count} games still have live odds")
+            print(f"   {cached_count} games are showing cached odds from earlier today")
 
 if __name__ == "__main__":
     main() 

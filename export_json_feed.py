@@ -55,6 +55,7 @@ def create_summary_dataset(data: Dict[str, Any]) -> Dict[str, Any]:
             'commence_time': game['commence_time'],
             'game_time_formatted': game['game_time_formatted'],
             'player_count': len(game['players']),
+            'odds_status': game.get('odds_status', 'unknown'),
             'players': [
                 {
                     'player_name': player['player_name'],
@@ -63,6 +64,11 @@ def create_summary_dataset(data: Dict[str, Any]) -> Dict[str, Any]:
                 } for player in game['players']
             ]
         }
+        
+        # Add last_updated if it's cached odds
+        if game.get('odds_status') == 'cached' and game.get('last_updated'):
+            summary_game['last_updated'] = game['last_updated']
+            
         summary_games.append(summary_game)
     
     return {
@@ -77,21 +83,27 @@ def create_summary_dataset(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 def create_players_dataset(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Create player-focused dataset with game context"""
+    """Create player-centric dataset with game context"""
     all_players = []
     
     for game in data['games']:
         for player in game['players']:
             player_with_context = {
-                **player,
+                **player,  # Include all player data
                 'game_context': {
                     'game_id': game['game_id'],
                     'away_team': game['away_team'],
                     'home_team': game['home_team'],
                     'commence_time': game['commence_time'],
-                    'game_time_formatted': game['game_time_formatted']
+                    'game_time_formatted': game['game_time_formatted'],
+                    'odds_status': game.get('odds_status', 'unknown')
                 }
             }
+            
+            # Add last_updated if it's cached odds
+            if game.get('odds_status') == 'cached' and game.get('last_updated'):
+                player_with_context['game_context']['last_updated'] = game['last_updated']
+            
             all_players.append(player_with_context)
     
     # Sort by player name
@@ -102,7 +114,7 @@ def create_players_dataset(data: Dict[str, Any]) -> Dict[str, Any]:
             **data['metadata'],
             'format': 'players',
             'description': 'All player props with game context',
-            'use_case': 'Player comparison tools, fantasy apps'
+            'use_case': 'Player comparison, fantasy applications, player-specific analysis'
         },
         'summary': {
             **data['summary'],
@@ -137,6 +149,7 @@ def create_best_odds_dataset(data: Dict[str, Any]) -> Dict[str, Any]:
                     'line_display': player['line_display'],
                     'game_info': f"{game['away_team']} @ {game['home_team']}",
                     'game_time': game['game_time_formatted'],
+                    'odds_status': game.get('odds_status', 'unknown'),
                     'consensus_odds': {
                         'yes': yes_odds,
                         'no': no_odds
@@ -158,6 +171,11 @@ def create_best_odds_dataset(data: Dict[str, Any]) -> Dict[str, Any]:
                     'sportsbook_count': player['sportsbook_count'],
                     'value_score': abs(yes_odds) if yes_odds > 150 else abs(no_odds) if no_odds > 150 else 0
                 }
+                
+                # Add last_updated if it's cached odds
+                if game.get('odds_status') == 'cached' and game.get('last_updated'):
+                    best_odds_player['last_updated'] = game['last_updated']
+                
                 best_odds_players.append(best_odds_player)
     
     # Sort by value score (highest first) then by player name

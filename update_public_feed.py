@@ -23,7 +23,8 @@ from pathlib import Path
 
 # Import functions from other scripts
 from homerun_odds import (
-    validate_api_key, get_games_data, process_home_run_props
+    validate_api_key, get_games_data, process_home_run_props,
+    load_daily_cache, save_daily_cache, merge_with_cached_data
 )
 from export_json_feed import (
     create_full_dataset, create_summary_dataset, 
@@ -313,57 +314,89 @@ def copy_to_root():
 
 def main():
     """Main execution function"""
-    print("🏠 Update Public Feed - Generate Public API Endpoints")
-    print("=" * 55)
+    print("🏠 Update Public Feed - Generate Public API Endpoints with Daily Persistence")
+    print("=" * 75)
     
     # Validate configuration
     validate_api_key()
     
-    # Fetch and process data
-    print("🔍 Fetching home run props data...")
+    # Load cached data from earlier today
+    cached_data = load_daily_cache()
+    
+    # Fetch fresh data from API
+    print("🔍 Fetching fresh home run props data from API...")
     games_data = get_games_data()
-    if not games_data:
-        print("❌ No games data available")
-        # Create empty data structure for consistency
+    
+    if games_data:
+        # Process the fresh data
+        processed_data = process_home_run_props(games_data)
+        
+        # Merge with cached data to preserve odds from games that started
+        final_data = merge_with_cached_data(processed_data, cached_data)
+        
+        # Save the merged data as new cache
+        save_daily_cache(final_data)
+        
+    elif cached_data:
+        # No fresh data available, but we have cached data
+        print("⚠️  No fresh data available from API, using cached data only")
+        final_data = cached_data
+        
+        # Update the generated_at timestamp while keeping cached odds
         eastern = pytz.timezone('US/Eastern')
-        games_data = []
-        processed_data = {
+        final_data['metadata']['generated_at'] = datetime.now(eastern).isoformat()
+        final_data['metadata']['note'] = 'Using cached odds - API returned no data'
+        
+    else:
+        # No data at all - create empty structure
+        print("❌ No games data available and no cached data")
+        eastern = pytz.timezone('US/Eastern')
+        final_data = {
             'metadata': {
                 'generated_at': datetime.now(eastern).isoformat(),
                 'date': datetime.now(eastern).strftime('%Y-%m-%d'),
                 'timezone': 'US/Eastern',
                 'sport': 'baseball_mlb',
-                'market': 'batter_home_runs'
+                'market': 'batter_home_runs',
+                'note': 'No data available'
             },
             'summary': {
                 'total_games': 0,
                 'games_with_props': 0,
-                'total_players': 0
+                'total_players': 0,
+                'live_games': 0,
+                'cached_games': 0
             },
             'games': []
         }
-    else:
-        processed_data = process_home_run_props(games_data)
-    
+
     # Create directory structure
     create_api_directories()
     
     # Generate API endpoints
     print("\n📡 Generating API endpoints...")
-    file_sizes = generate_api_endpoints(processed_data)
+    file_sizes = generate_api_endpoints(final_data)
     
     # Create CORS headers
     create_cors_headers()
     
     # Generate documentation
     print("\n📚 Generating documentation...")
-    generate_documentation_page(processed_data, file_sizes)
+    generate_documentation_page(final_data, file_sizes)
     
     # Copy to root for GitHub Pages
     copy_to_root()
     
-    print(f"\n✅ Successfully generated public API feed")
-    print(f"📊 Summary: {processed_data['summary']['total_players']} players across {processed_data['summary']['total_games']} games")
+    print(f"\n✅ Successfully generated public API feed with daily persistence")
+    print(f"📊 Summary: {final_data['summary']['total_players']} players across {final_data['summary']['total_games']} games")
+    
+    # Show persistence info
+    if 'live_games' in final_data['summary']:
+        live_count = final_data['summary']['live_games']
+        cached_count = final_data['summary']['cached_games']
+        print(f"🔴 {live_count} games with live odds")
+        print(f"💾 {cached_count} games with cached odds (preserved until midnight)")
+    
     print(f"🌐 API endpoints ready for deployment")
 
 if __name__ == "__main__":
