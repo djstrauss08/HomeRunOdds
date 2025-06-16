@@ -168,35 +168,51 @@ def get_games_data() -> List[Dict]:
     date_str = today_est.strftime('%Y-%m-%d')
     
     # Step 1: Get today's games using h2h market (which always works)
+    # Remove date filtering from API call and filter afterward to catch all games
     games_url = f"{BASE_URL}/sports/{SPORT}/odds/"
     games_params = {
         'apiKey': API_KEY,
         'regions': REGIONS,
         'markets': 'h2h',  # Use h2h to get basic game info
         'oddsFormat': ODDS_FORMAT,
-        'dateFormat': 'iso',
-        'commenceTimeFrom': f"{date_str}T00:00:00Z",
-        'commenceTimeTo': f"{date_str}T23:59:59Z"
+        'dateFormat': 'iso'
+        # Removed date filtering - we'll filter afterward
     }
     
     try:
-        print(f"🎯 Getting MLB games for {date_str}...")
+        print(f"🎯 Getting all available MLB games...")
         games_response = requests.get(games_url, params=games_params, timeout=30)
         games_response.raise_for_status()
         
         games_data = games_response.json()
-        print(f"✅ Found {len(games_data)} MLB games")
         
-        if not games_data:
+        # Filter games to only include those that are actually today in Eastern time
+        today_games = []
+        for game in games_data:
+            # Convert UTC time to Eastern time
+            commence_utc = datetime.fromisoformat(game['commence_time'].replace('Z', '+00:00'))
+            commence_est = commence_utc.astimezone(eastern)
+            game_date_est = commence_est.strftime('%Y-%m-%d')
+            
+            if game_date_est == date_str:
+                today_games.append(game)
+        
+        print(f"✅ Found {len(today_games)} MLB games for today (filtered from {len(games_data)} total)")
+        
+        if not today_games:
             print("ℹ️  No MLB games found for today")
             return []
         
         # Step 2: Get player props for each game using the EVENTS endpoint
         games_with_props = []
         
-        for i, game in enumerate(games_data, 1):
+        for i, game in enumerate(today_games, 1):
             event_id = game['id']
-            print(f"🏠 [{i}/{len(games_data)}] Getting home run props for {game['away_team']} @ {game['home_team']}...")
+            commence_utc = datetime.fromisoformat(game['commence_time'].replace('Z', '+00:00'))
+            commence_est = commence_utc.astimezone(eastern)
+            time_str = commence_est.strftime('%H:%M EST')
+            
+            print(f"🏠 [{i}/{len(today_games)}] Getting home run props for {game['away_team']} @ {game['home_team']} ({time_str})...")
             
             # FIXED: Use the events endpoint for player props (this is the key!)
             props_url = f"{BASE_URL}/sports/{SPORT}/events/{event_id}/odds"
@@ -242,20 +258,18 @@ def get_games_data() -> List[Dict]:
                         print(f"    ❌ No home run props available")
                 else:
                     print(f"    ⚠️  API error for props: {props_response.status_code}")
-                    print(f"    Error details: {props_response.text[:200]}...")
+                    if props_response.status_code == 422:
+                        print(f"    Error: {props_response.text[:200]}...")
                     
             except Exception as e:
                 print(f"    ❌ Error getting props: {e}")
                 continue
-                
-        print(f"🎯 Summary: {len(games_with_props)} of {len(games_data)} games have home run props available")
+        
+        print(f"🎯 Final result: {len(games_with_props)} games with home run props out of {len(today_games)} total games")
         return games_with_props
         
     except requests.exceptions.RequestException as e:
-        print(f"❌ Network error: {e}")
-        return []
-    except ValueError as e:
-        print(f"❌ JSON parsing error: {e}")
+        print(f"❌ Error fetching games: {e}")
         return []
     except Exception as e:
         print(f"❌ Unexpected error: {e}")
