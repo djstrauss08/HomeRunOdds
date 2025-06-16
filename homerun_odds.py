@@ -191,15 +191,15 @@ def get_games_data() -> List[Dict]:
             print("ℹ️  No MLB games found for today")
             return []
         
-        # Step 2: Get player props for each game
+        # Step 2: Get player props for each game using the EVENTS endpoint
         games_with_props = []
         
         for i, game in enumerate(games_data, 1):
             event_id = game['id']
             print(f"🏠 [{i}/{len(games_data)}] Getting home run props for {game['away_team']} @ {game['home_team']}...")
             
-            # Get player props for this specific event
-            props_url = f"{BASE_URL}/sports/{SPORT}/events/{event_id}/odds/"
+            # FIXED: Use the events endpoint for player props (this is the key!)
+            props_url = f"{BASE_URL}/sports/{SPORT}/events/{event_id}/odds"
             props_params = {
                 'apiKey': API_KEY,
                 'regions': REGIONS,
@@ -237,24 +237,28 @@ def get_games_data() -> List[Dict]:
                             'bookmakers': props_data['bookmakers']
                         }
                         games_with_props.append(game_with_props)
-                        print(f"    ✅ Found home run props")
+                        print(f"    ✅ Found home run props!")
                     else:
-                        print(f"    ⚠️  No home run props available")
-                
-                elif props_response.status_code == 422:
-                    print(f"    ⚠️  Home run props not supported for this game")
+                        print(f"    ❌ No home run props available")
                 else:
-                    print(f"    ❌ Error getting props: {props_response.status_code} - {props_response.text[:100]}")
+                    print(f"    ⚠️  API error for props: {props_response.status_code}")
+                    print(f"    Error details: {props_response.text[:200]}...")
                     
-            except requests.exceptions.RequestException as e:
-                print(f"    ❌ Request error for {event_id}: {str(e)}")
+            except Exception as e:
+                print(f"    ❌ Error getting props: {e}")
                 continue
-        
-        print(f"🏠 Total games with home run props: {len(games_with_props)}")
+                
+        print(f"🎯 Summary: {len(games_with_props)} of {len(games_data)} games have home run props available")
         return games_with_props
         
     except requests.exceptions.RequestException as e:
-        print(f"❌ Error fetching games data: {e}")
+        print(f"❌ Network error: {e}")
+        return []
+    except ValueError as e:
+        print(f"❌ JSON parsing error: {e}")
+        return []
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
         return []
 
 def process_home_run_props(games_data: List[Dict]) -> Dict[str, Any]:
